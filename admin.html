@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#1f6feb">
+<title>Panel del administrador</title>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
+<style>
+:root{--bg:#f5f6f8;--card:#fff;--tx:#1a1d21;--mut:#6b7280;--pri:#1f6feb;--bd:#d9dde3;--ok:#1a7f37;--err:#c0262d}
+@media (prefers-color-scheme:dark){:root{--bg:#14161a;--card:#1e2126;--tx:#eceef1;--mut:#9aa1ab;--bd:#343a42;--ok:#3fb950;--err:#f0616d}}
+*{box-sizing:border-box}
+body{margin:0;font:16px system-ui,sans-serif;background:var(--bg);color:var(--tx);padding:env(safe-area-inset-top) 0 env(safe-area-inset-bottom)}
+main{max-width:760px;margin:0 auto;padding:16px}
+h1{font-size:20px;margin:4px 0}h2{font-size:17px;margin:16px 0 8px}
+.mut{color:var(--mut);font-size:14px}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:12px;padding:14px;margin-bottom:10px}
+.go{cursor:pointer}.go:hover{border-color:var(--pri)}
+label{display:block;font-weight:600;margin:12px 0 4px}
+input,select,textarea{width:100%;padding:11px;font:inherit;color:var(--tx);background:var(--bg);border:1px solid var(--bd);border-radius:8px}
+textarea{min-height:90px}
+button{padding:12px 14px;margin-top:12px;font:inherit;font-weight:700;color:#fff;background:var(--pri);border:0;border-radius:10px;cursor:pointer}
+button.sec{background:transparent;color:var(--pri);border:1px solid var(--bd)}
+button.sm{padding:7px 10px;margin:8px 8px 0 0;font-size:14px}
+.tabs{display:flex;gap:8px;margin:12px 0}.tabs button{flex:1;margin:0}
+.tabs button.on{background:var(--pri);color:#fff}
+.row{display:flex;justify-content:space-between;gap:10px;align-items:flex-start}
+.big{font-size:22px;font-weight:800}.tag{font-size:12px;font-weight:700;padding:2px 8px;border-radius:99px;border:1px solid var(--bd);white-space:nowrap}
+.msg{margin-top:10px;font-weight:600}.ok{color:var(--ok)}.err{color:var(--err)}
+#crumbs{margin:6px 0 10px;font-size:14px}#crumbs a{color:var(--pri);cursor:pointer}
+.hide{display:none}
+</style>
+</head>
+<body>
+<main>
+<section id="login" class="hide">
+  <h1>Panel del administrador</h1>
+  <div class="card">
+    <label for="em">Correo</label><input id="em" type="email" autocomplete="username">
+    <label for="pw">Contraseña</label><input id="pw" type="password" autocomplete="current-password">
+    <button data-a="login" style="width:100%">Entrar</button>
+    <div id="lm" class="msg err"></div>
+  </div>
+</section>
+
+<section id="app" class="hide">
+  <div class="row"><div><h1 id="bn">Edificio</h1><div id="who" class="mut"></div></div>
+  <button class="sec sm" data-a="logout">Salir</button></div>
+  <div class="tabs">
+    <button data-t="rep">Reportes</button><button data-t="gas">Gastos</button><button data-t="equ">Equipos</button>
+  </div>
+  <div id="crumbs"></div>
+  <div id="view"></div>
+</section>
+</main>
+<script>
+const db = supabase.createClient("https://jfrythksdeiwrofsyvps.supabase.co", "sb_publishable_5Au68bE2Wp3fnxz1QIv2vw_18tklepb");
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const S = n => "S/ " + Number(n || 0).toLocaleString("es-PE", {minimumFractionDigits:2, maximumFractionDigits:2});
+const mlabel = m => new Date(m + "T00:00:00").toLocaleDateString("es-PE", {month:"long", year:"numeric"});
+const dlabel = d => new Date(d).toLocaleString("es-PE", {dateStyle:"short", timeStyle:"short"});
+const dday = d => d ? new Date(d + "T00:00:00").toLocaleDateString("es-PE") : "—";
+const nextM = m => { const d = new Date(m + "T00:00:00"); d.setMonth(d.getMonth() + 1); return d.toLocaleDateString("en-CA"); };
+const CAT = {personal:"Personal", maquinaria:"Maquinaria / Equipos", servicios:"Servicios", otros:"Otros"};
+let B = null, names = {}, eqs = {}, crumbs = [], acts = [];
+const act = fn => { acts.push(fn); return acts.length - 1; };
+const say = (el, t, c) => { el.textContent = t; el.className = "msg " + (c || ""); };
+
+// ---------- navegación (drill-down con migas de pan) ----------
+function go(label, fn, reset){ if (reset) crumbs = []; crumbs.push({label, fn}); render(); }
+async function render(){
+  acts = [];
+  $("crumbs").innerHTML = crumbs.map((c, i) => i === crumbs.length - 1 ? `<b>${esc(c.label)}</b>` : `<a data-c="${i}">${esc(c.label)}</a>`).join(" › ");
+  $("view").innerHTML = '<p class="mut">Cargando…</p>';
+  try { await crumbs[crumbs.length - 1].fn(); }
+  catch (e) { $("view").innerHTML = '<p class="err">No se pudo cargar. Revisa tu internet.</p>'; }
+}
+document.body.addEventListener("click", e => {
+  const c = e.target.closest("[data-c]"); if (c){ crumbs = crumbs.slice(0, +c.dataset.c + 1); return render(); }
+  const t = e.target.closest("[data-t]"); if (t) return tab(t.dataset.t);
+  const a = e.target.closest("[data-a]");
+  if (a){ const f = acts[+a.dataset.a]; if (f) return f(e); if (a.dataset.a === "login") return login(); if (a.dataset.a === "logout") return logout(); }
+});
+function tab(k){
+  document.querySelectorAll(".tabs button").forEach(b => b.classList.toggle("on", b.dataset.t === k));
+  if (k === "rep") go("Reportes", vRep, true);
+  if (k === "gas") go("Gastos", vG1, true);
+  if (k === "equ") go("Equipos", vEq, true);
+}
+const list = items => items.map(i => `<div class="card go" data-a="${act(i.fn)}"><div class="row"><div><b>${esc(i.t)}</b>${i.s ? `<div class="mut">${esc(i.s)}</div>` : ""}</div><div class="big">${esc(i.r)}</div></div></div>`).join("");
+
+// ---------- sesión ----------
+async function login(){
+  say($("lm"), "");
+  const {data, error} = await db.auth.signInWithPassword({email:$("em").value.trim(), password:$("pw").value});
+  if (error) return say($("lm"), "Correo o contraseña incorrectos.", "err");
+  start(data.user);
+}
+async function logout(){ await db.auth.signOut(); $("app").classList.add("hide"); $("login").classList.remove("hide"); }
+async function start(u){
+  const {data} = await db.from("building_members").select("building_id, buildings(name)").eq("user_id", u.id).eq("role", "admin").limit(1);
+  if (!data || !data.length){ await db.auth.signOut(); $("login").classList.remove("hide"); return say($("lm"), "Esta pantalla es solo para administradores.", "err"); }
+  B = data[0].building_id; $("bn").textContent = data[0].buildings.name;
+  const [p, q] = await Promise.all([db.from("profiles").select("id,full_name"), db.from("equipment").select("*").eq("building_id", B).order("name")]);
+  names = {}; (p.data || []).forEach(x => names[x.id] = x.full_name);
+  eqs = {}; (q.data || []).forEach(x => eqs[x.id] = x);
+  $("who").textContent = names[u.id] || u.email;
+  $("login").classList.add("hide"); $("app").classList.remove("hide");
+  tab("rep");
+}
+(async () => { const {data:{session}} = await db.auth.getSession(); session ? start(session.user) : $("login").classList.remove("hide"); })();
+
+// ---------- REPORTES ----------
+async function vRep(){
+  const {data, error} = await db.from("tickets").select("*").eq("building_id", B).order("reported_at", {ascending:false}).limit(50);
+  if (error) throw error;
+  if (!data.length) return $("view").innerHTML = '<p class="mut">No hay reportes.</p>';
+  $("view").innerHTML = data.map(t => `<div class="card">
+    <div class="row"><b>${esc(eqs[t.equipment_id]?.name || "Otro")}</b><span class="tag">${esc(t.status)} · ${esc(t.priority)}</span></div>
+    <div>${esc(t.description)}</div>
+    <div class="mut">Reportó: ${esc(names[t.reported_by] || "—")} · ${dlabel(t.reported_at)}</div>
+    ${t.photo_paths && t.photo_paths.length ? `<button class="sec sm" data-a="${act(() => photo(t.photo_paths[0]))}">Ver foto</button>` : ""}
+    ${t.status !== "resuelto" && t.status !== "cancelado" ? `<button class="sm" data-a="${act(() => formWork(t, t.equipment_id))}">Registrar trabajo</button>` : ""}
+  </div>`).join("");
+}
+async function photo(path){
+  const {data} = await db.storage.from("evidencias").createSignedUrl(path, 3600);
+  if (data) window.open(data.signedUrl, "_blank");
+}
+
+// ---------- FORMULARIO: trabajo / intervención ----------
+function formWork(t, eid){
+  const opts = Object.values(eqs).map(e => `<option value="${e.id}" ${e.id === eid ? "selected" : ""}>${esc(e.name)}</option>`).join("");
+  $("view").innerHTML = `<div class="card"><h2 style="margin-top:0">Registrar trabajo</h2>
+    ${t ? `<p class="mut">Reporte: ${esc(t.description)}</p>` : ""}
+    <label>Equipo</label><select id="w_eq"><option value="">Elige un equipo</option>${opts}</select>
+    <label>Tipo</label><select id="w_ty"><option value="correctivo">Correctivo</option><option value="preventivo">Preventivo</option><option value="emergencia">Emergencia</option></select>
+    <label>Proveedor / técnico</label><input id="w_pv">
+    <label>Qué se hizo / qué se cambió</label><textarea id="w_ds"></textarea>
+    <label>Costo (S/)</label><input id="w_co" type="number" step="0.01" min="0" inputmode="decimal">
+    <label>Fecha del trabajo</label><input id="w_fe" type="date" value="${new Date().toLocaleDateString("en-CA")}">
+    <label>Garantía desde</label><input id="w_ws" type="date">
+    <label>Garantía hasta</label><input id="w_we" type="date">
+    <label>Condiciones de la garantía</label><input id="w_wn">
+    ${t ? '<label style="display:flex;gap:8px;align-items:center"><input id="w_rs" type="checkbox" checked style="width:auto"> Marcar el reporte como resuelto</label>' : ""}
+    <button data-a="${act(() => saveWork(t))}">Guardar</button> <button class="sec" data-a="${act(render)}">Cancelar</button>
+    <div id="w_m" class="msg"></div></div>`;
+}
+async function saveWork(t){
+  const m = $("w_m"), v = id => $(id).value.trim();
+  if (!v("w_eq")) return say(m, "Elige el equipo.", "err");
+  if (v("w_ds").length < 3) return say(m, "Describe qué se hizo.", "err");
+  say(m, "Guardando…");
+  const {error} = await db.from("interventions").insert({
+    building_id: B, equipment_id: v("w_eq"), ticket_id: t ? t.id : null, type: v("w_ty"),
+    provider_name: v("w_pv") || null, work_description: v("w_ds"), cost: +v("w_co") || 0,
+    performed_at: v("w_fe"), warranty_start: v("w_ws") || null, warranty_end: v("w_we") || null, warranty_notes: v("w_wn") || null
+  });
+  if (error) return say(m, "No se pudo guardar: " + error.message, "err");
+  if (t && $("w_rs") && $("w_rs").checked) await db.from("tickets").update({status:"resuelto"}).eq("id", t.id);
+  say(m, "Trabajo registrado. El egreso se creó automáticamente.", "ok");
+  setTimeout(render, 900);
+}
+
+// ---------- FORMULARIO: gasto general ----------
+function formExp(){
+  $("view").innerHTML = `<div class="card"><h2 style="margin-top:0">Registrar gasto general</h2>
+    <label>Categoría</label><select id="x_ca"><option value="personal">Personal</option><option value="servicios">Servicios (luz, agua…)</option><option value="otros">Otros</option></select>
+    <label>Descripción</label><input id="x_ds">
+    <label>Monto (S/)</label><input id="x_am" type="number" step="0.01" min="0" inputmode="decimal">
+    <label>Fecha</label><input id="x_fe" type="date" value="${new Date().toLocaleDateString("en-CA")}">
+    <label>Proveedor / a quién se pagó</label><input id="x_pv">
+    <button data-a="${act(saveExp)}">Guardar</button> <button class="sec" data-a="${act(render)}">Cancelar</button>
+    <div id="x_m" class="msg"></div></div>`;
+}
+async function saveExp(){
+  const m = $("x_m"), v = id => $(id).value.trim();
+  if (!v("x_ds") || !(+v("x_am") > 0)) return say(m, "Completa descripción y monto.", "err");
+  const {error} = await db.from("expenses").insert({building_id:B, category:v("x_ca"), description:v("x_ds"), amount:+v("x_am"), expense_date:v("x_fe"), provider:v("x_pv") || null});
+  if (error) return say(m, "No se pudo guardar: " + error.message, "err");
+  say(m, "Gasto registrado.", "ok"); setTimeout(render, 700);
+}
+
+// ---------- GASTOS: Categoría → Mes → Máquina → Detalle ----------
+async function vG1(){
+  const {data, error} = await db.from("v_expenses_by_category_month").select("*").eq("building_id", B);
+  if (error) throw error;
+  const tot = {personal:0, maquinaria:0, servicios:0, otros:0}; let all = 0;
+  data.forEach(r => { tot[r.category] += +r.total; all += +r.total; });
+  $("view").innerHTML = `<div class="card"><div class="mut">Total de gastos</div><div class="big">${S(all)}</div>
+    <button class="sm" data-a="${act(formExp)}">+ Gasto general</button>
+    <button class="sm" data-a="${act(() => formWork(null, null))}">+ Trabajo en equipo</button></div>` +
+    list(Object.keys(CAT).map(c => ({t:CAT[c], r:S(tot[c]), fn:() => go(CAT[c], () => vG2(c, data))})));
+}
+async function vG2(c, data){
+  const by = {}; data.filter(r => r.category === c).forEach(r => by[r.month] = (by[r.month] || 0) + +r.total);
+  const ms = Object.keys(by).sort().reverse();
+  $("view").innerHTML = ms.length ? list(ms.map(m => ({t:mlabel(m), r:S(by[m]), fn:() => go(mlabel(m), () => vG3(c, m))}))) : '<p class="mut">Sin gastos en esta categoría.</p>';
+}
+async function vG3(c, m){
+  if (c === "maquinaria"){
+    const {data, error} = await db.from("v_expenses_by_equipment_month").select("*").eq("building_id", B).eq("month", m);
+    if (error) throw error;
+    return $("view").innerHTML = list(data.map(r => ({t:r.equipment_name, r:S(r.total), fn:() => go(r.equipment_name, () => vG4(r.equipment_id, m))})));
+  }
+  const {data, error} = await db.from("expenses").select("*").eq("building_id", B).eq("category", c).gte("expense_date", m).lt("expense_date", nextM(m)).order("expense_date", {ascending:false});
+  if (error) throw error;
+  $("view").innerHTML = data.map(x => `<div class="card"><div class="row"><b>${esc(x.description)}</b><div class="big">${S(x.amount)}</div></div>
+    <div class="mut">${dday(x.expense_date)} · ${esc(x.provider || "sin proveedor")} · registró ${esc(names[x.registered_by] || "—")}</div></div>`).join("");
+}
+async function vG4(eid, m){
+  const {data, error} = await db.from("interventions").select("*, tickets(description,reported_by,reported_at)")
+    .eq("equipment_id", eid).gte("performed_at", m).lt("performed_at", nextM(m)).order("performed_at", {ascending:false});
+  if (error) throw error;
+  $("view").innerHTML = data.map(i => `<div class="card"><div class="row"><b>${esc(i.type)} · ${dday(i.performed_at)}</b><div class="big">${S(i.cost)}</div></div>
+    <div>${esc(i.work_description)}</div>
+    <div class="mut">Proveedor: ${esc(i.provider_name || "—")} · Garantía: ${i.warranty_end ? "hasta " + dday(i.warranty_end) : "sin garantía"}${i.warranty_notes ? " (" + esc(i.warranty_notes) + ")" : ""}</div>
+    <div class="mut">${i.tickets ? "Reportó: " + esc(names[i.tickets.reported_by] || "—") + " (" + dlabel(i.tickets.reported_at) + ") · " : ""}Registró: ${esc(names[i.registered_by] || "—")}</div></div>`).join("") +
+    `<button class="sec" data-a="${act(() => go("Historial", () => vHist(eid)))}">Ver historial completo de esta máquina</button>`;
+}
+
+// ---------- EQUIPOS e historial ----------
+async function vEq(){
+  const {data, error} = await db.from("v_expenses_by_equipment_month").select("equipment_id,total").eq("building_id", B);
+  if (error) throw error;
+  const tot = {}; data.forEach(r => tot[r.equipment_id] = (tot[r.equipment_id] || 0) + +r.total);
+  const items = Object.values(eqs);
+  $("view").innerHTML = items.length ? list(items.map(e => ({t:e.name, s:(e.location || "") + " · " + e.status, r:S(tot[e.id]), fn:() => go(e.name, () => vHist(e.id))}))) : '<p class="mut">No hay equipos cargados.</p>';
+}
+async function vHist(eid){
+  const {data, error} = await db.from("v_equipment_history").select("*").eq("equipment_id", eid).order("event_at", {ascending:false});
+  if (error) throw error;
+  const e = eqs[eid], total = data.filter(x => x.event === "intervencion").reduce((a, x) => a + +x.cost, 0);
+  $("view").innerHTML = `<div class="card"><b>${esc(e.name)}</b><div class="mut">${esc(e.location || "")} · ${esc(e.status)}</div>
+    <div class="mut">Total gastado en su historia</div><div class="big">${S(total)}</div>
+    <button class="sm" data-a="${act(() => formWork(null, eid))}">+ Registrar trabajo</button></div>` +
+    (data.length ? data.map(x => `<div class="card"><div class="row"><b>${x.event === "intervencion" ? "Trabajo" : "Reporte"} · ${esc(x.detail_type)}</b><div>${x.event === "intervencion" ? `<b>${S(x.cost)}</b>` : ""}</div></div>
+      <div>${esc(x.description)}</div>
+      <div class="mut">${dlabel(x.event_at)} · ${esc(x.person || "—")}${x.provider_name ? " · Proveedor: " + esc(x.provider_name) : ""}${x.warranty_end ? " · Garantía hasta " + dday(x.warranty_end) : ""}</div></div>`).join("") : '<p class="mut">Sin historial todavía.</p>');
+}
+</script>
+</body>
+</html>
