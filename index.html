@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#1f6feb">
+<title>Reportes del edificio</title>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
+<style>
+:root{--bg:#f5f6f8;--card:#fff;--tx:#1a1d21;--mut:#6b7280;--pri:#1f6feb;--bd:#d9dde3;--ok:#1a7f37;--warn:#b45309;--err:#c0262d}
+@media (prefers-color-scheme:dark){:root{--bg:#14161a;--card:#1e2126;--tx:#eceef1;--mut:#9aa1ab;--bd:#343a42;--ok:#3fb950;--warn:#e3a008;--err:#f0616d}}
+*{box-sizing:border-box}
+body{margin:0;font:16px system-ui,sans-serif;background:var(--bg);color:var(--tx);padding:env(safe-area-inset-top) 0 env(safe-area-inset-bottom)}
+main{max-width:520px;margin:0 auto;padding:16px}
+h1{font-size:20px;margin:8px 0 2px}h2{font-size:16px;margin:24px 0 8px}
+.mut{color:var(--mut);font-size:14px}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:12px;padding:16px;margin-bottom:12px}
+label{display:block;font-weight:600;margin:12px 0 4px}
+input,select,textarea{width:100%;padding:12px;font:inherit;color:var(--tx);background:var(--bg);border:1px solid var(--bd);border-radius:8px}
+textarea{min-height:110px;resize:vertical}
+button{width:100%;padding:14px;margin-top:16px;font:inherit;font-weight:700;color:#fff;background:var(--pri);border:0;border-radius:10px}
+button.sec{background:transparent;color:var(--pri);border:1px solid var(--bd);margin-top:8px}
+button:disabled{opacity:.6}
+.msg{margin-top:12px;font-weight:600}.ok{color:var(--ok)}.err{color:var(--err)}
+.row{display:flex;justify-content:space-between;gap:8px;align-items:flex-start}
+.tag{font-size:12px;font-weight:700;padding:2px 8px;border-radius:99px;border:1px solid var(--bd);white-space:nowrap}
+.hide{display:none}img.prev{max-width:100%;border-radius:8px;margin-top:8px}
+</style>
+</head>
+<body>
+<main>
+
+<section id="login" class="hide">
+  <h1>Reportes del edificio</h1>
+  <p class="mut">Inicia sesión con tu usuario.</p>
+  <div class="card">
+    <label for="em">Correo</label>
+    <input id="em" type="email" autocomplete="username" inputmode="email">
+    <label for="pw">Contraseña</label>
+    <input id="pw" type="password" autocomplete="current-password">
+    <button id="btnLogin">Entrar</button>
+    <div id="loginMsg" class="msg err"></div>
+  </div>
+</section>
+
+<section id="app" class="hide">
+  <div class="row">
+    <div><h1 id="bname">Edificio</h1><div id="who" class="mut"></div></div>
+    <button id="btnOut" class="sec" style="width:auto;margin:0;padding:8px 12px">Salir</button>
+  </div>
+
+  <div class="card" style="margin-top:12px">
+    <div id="bsel" class="hide"><label for="bsel2">Edificio</label><select id="bsel2"></select></div>
+    <label for="eq">Equipo</label>
+    <select id="eq"></select>
+    <label for="ds">¿Qué problema hay?</label>
+    <textarea id="ds" placeholder="Ejemplo: el panel muestra falla en la zona 3, luz roja intermitente y pitido constante"></textarea>
+    <label for="pr">Urgencia</label>
+    <select id="pr">
+      <option value="normal">Normal</option>
+      <option value="baja">Baja</option>
+      <option value="alta">Alta</option>
+      <option value="urgente">Urgente</option>
+    </select>
+    <label for="ph">Foto (opcional)</label>
+    <input id="ph" type="file" accept="image/*" capture="environment">
+    <img id="prev" class="prev hide" alt="Vista previa">
+    <button id="btnSend">Enviar reporte</button>
+    <div id="sendMsg" class="msg"></div>
+  </div>
+
+  <h2>Reportes recientes</h2>
+  <div id="list"></div>
+</section>
+
+</main>
+<script>
+const SUPABASE_URL = "https://jfrythksdeiwrofsyvps.supabase.co";
+const SUPABASE_KEY = "sb_publishable_5Au68bE2Wp3fnxz1QIv2vw_18tklepb";
+const db = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+let buildings = [], buildingId = null, equipment = {}, me = null;
+
+function show(id){ ["login","app"].forEach(x => $(x).classList.toggle("hide", x !== id)); }
+function say(el, text, cls){ el.textContent = text; el.className = "msg " + (cls || ""); }
+
+async function init(){
+  const { data:{ session } } = await db.auth.getSession();
+  if (session) await start(session.user); else show("login");
+}
+
+$("btnLogin").onclick = async () => {
+  const btn = $("btnLogin"); btn.disabled = true; say($("loginMsg"), "");
+  const { data, error } = await db.auth.signInWithPassword({ email: $("em").value.trim(), password: $("pw").value });
+  btn.disabled = false;
+  if (error) return say($("loginMsg"), "Correo o contraseña incorrectos, o sin internet.", "err");
+  await start(data.user);
+};
+
+$("btnOut").onclick = async () => { await db.auth.signOut(); show("login"); };
+
+async function start(user){
+  me = user;
+  const { data: prof } = await db.from("profiles").select("full_name").eq("id", user.id).maybeSingle();
+  $("who").textContent = prof ? prof.full_name : user.email;
+  const { data: bs, error } = await db.from("buildings").select("id,name").order("name");
+  if (error || !bs || !bs.length){ show("login"); return say($("loginMsg"), "Tu usuario no tiene un edificio asignado. Avisa al administrador.", "err"); }
+  buildings = bs;
+  const sel = $("bsel2");
+  sel.innerHTML = bs.map(b => `<option value="${b.id}">${esc(b.name)}</option>`).join("");
+  $("bsel").classList.toggle("hide", bs.length < 2);
+  sel.onchange = () => loadBuilding(sel.value);
+  show("app");
+  await loadBuilding(bs[0].id);
+}
+
+async function loadBuilding(id){
+  buildingId = id;
+  $("bname").textContent = buildings.find(b => b.id === id).name;
+  const { data: eqs } = await db.from("equipment").select("id,name,location").eq("building_id", id).order("name");
+  equipment = {};
+  (eqs || []).forEach(e => equipment[e.id] = e.name);
+  $("eq").innerHTML = '<option value="">Otro / no está en la lista</option>' +
+    (eqs || []).map(e => `<option value="${e.id}">${esc(e.name)}${e.location ? " — " + esc(e.location) : ""}</option>`).join("");
+  await loadList();
+}
+
+async function loadList(){
+  const { data, error } = await db.from("tickets")
+    .select("description,status,priority,reported_at,reported_by,equipment_id")
+    .eq("building_id", buildingId).order("reported_at", { ascending:false }).limit(10);
+  if (error) return $("list").innerHTML = '<p class="mut">No se pudo cargar la lista.</p>';
+  if (!data.length) return $("list").innerHTML = '<p class="mut">Todavía no hay reportes.</p>';
+  $("list").innerHTML = data.map(t => {
+    const f = new Date(t.reported_at).toLocaleString("es-PE", { dateStyle:"short", timeStyle:"short" });
+    const mine = t.reported_by === me.id ? " · tuyo" : "";
+    return `<div class="card"><div class="row"><strong>${esc(equipment[t.equipment_id] || "Otro")}</strong><span class="tag">${esc(t.status)}</span></div>
+      <div>${esc(t.description)}</div><div class="mut">${f} · ${esc(t.priority)}${mine}</div></div>`;
+  }).join("");
+}
+
+// Reduce la foto a ~1280 px para cuidar el espacio gratuito (1 GB)
+function shrink(file){
+  return new Promise((res, rej) => {
+    const img = new Image();
+    img.onload = () => {
+      const k = Math.min(1, 1280 / Math.max(img.width, img.height));
+      const c = document.createElement("canvas");
+      c.width = Math.round(img.width * k); c.height = Math.round(img.height * k);
+      c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
+      c.toBlob(b => b ? res(b) : rej(new Error("foto")), "image/jpeg", 0.72);
+    };
+    img.onerror = () => rej(new Error("foto"));
+    img.src = URL.createObjectURL(file);
+  });
+}
+
+$("ph").onchange = e => {
+  const f = e.target.files[0], p = $("prev");
+  if (!f) return p.classList.add("hide");
+  p.src = URL.createObjectURL(f); p.classList.remove("hide");
+};
+
+$("btnSend").onclick = async () => {
+  const msg = $("sendMsg"), btn = $("btnSend"), desc = $("ds").value.trim();
+  if (desc.length < 5) return say(msg, "Escribe el problema (mínimo unas palabras).", "err");
+  btn.disabled = true; say(msg, "Enviando…");
+  try {
+    let paths = [];
+    const file = $("ph").files[0];
+    if (file){
+      const blob = await shrink(file);
+      const path = `${buildingId}/tickets/${crypto.randomUUID()}.jpg`;
+      const up = await db.storage.from("evidencias").upload(path, blob, { contentType:"image/jpeg" });
+      if (up.error) throw up.error;
+      paths = [path];
+    }
+    const { error } = await db.from("tickets").insert({
+      building_id: buildingId,
+      equipment_id: $("eq").value || null,
+      description: desc,
+      priority: $("pr").value,
+      photo_paths: paths
+    });
+    if (error) throw error;
+    say(msg, "Problema registrado correctamente.", "ok");
+    $("ds").value = ""; $("ph").value = ""; $("prev").classList.add("hide"); $("pr").value = "normal";
+    await loadList();
+  } catch (e) {
+    say(msg, "No se pudo enviar. Revisa tu internet e inténtalo de nuevo.", "err");
+  }
+  btn.disabled = false;
+};
+
+init();
+</script>
+</body>
+</html>
