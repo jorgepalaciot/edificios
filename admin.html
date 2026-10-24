@@ -22,7 +22,7 @@ textarea{min-height:90px}
 button{padding:12px 14px;margin-top:12px;font:inherit;font-weight:700;color:#fff;background:var(--pri);border:0;border-radius:10px;cursor:pointer}
 button.sec{background:transparent;color:var(--pri);border:1px solid var(--bd)}
 button.sm{padding:7px 10px;margin:8px 8px 0 0;font-size:14px}
-.tabs{display:flex;gap:8px;margin:12px 0}.tabs button{flex:1;margin:0;padding:10px 2px;font-size:13px}
+.tabs{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0}.tabs button{flex:1 1 30%;margin:0;padding:10px 2px;font-size:13px}
 .tabs button.on{background:var(--pri);color:#fff}
 .row{display:flex;justify-content:space-between;gap:10px;align-items:flex-start}
 .big{font-size:22px;font-weight:800}.tag{font-size:12px;font-weight:700;padding:2px 8px;border-radius:99px;border:1px solid var(--bd);white-space:nowrap}
@@ -47,7 +47,7 @@ button.sm{padding:7px 10px;margin:8px 8px 0 0;font-size:14px}
   <div class="row"><div><h1 id="bn">Edificio</h1><div id="who" class="mut"></div></div>
   <button class="sec sm" data-a="logout">Salir</button></div>
   <div class="tabs">
-    <button data-t="rep">Reportes</button><button data-t="ing">Ingresos</button><button data-t="deu">Deudas</button><button data-t="gas">Gastos</button><button data-t="equ">Equipos</button>
+    <button data-t="rep">Reportes</button><button data-t="ing">Ingresos</button><button data-t="deu">Deudas</button><button data-t="gas">Gastos</button><button data-t="equ">Equipos</button><button data-t="rut">Rutinas</button>
   </div>
   <div id="crumbs"></div>
   <div id="view"></div>
@@ -89,6 +89,7 @@ function tab(k){
   if (k === "deu") go("Deudas", vD1, true);
   if (k === "gas") go("Gastos", vG1, true);
   if (k === "equ") go("Equipos", vEq, true);
+  if (k === "rut") go("Rutinas", vR1, true);
 }
 const list = items => items.map(i => `<div class="card go" data-a="${act(i.fn)}"><div class="row"><div><b>${esc(i.t)}</b>${i.s ? `<div class="mut">${esc(i.s)}</div>` : ""}</div><div class="big">${esc(i.r)}</div></div></div>`).join("");
 
@@ -378,6 +379,53 @@ async function saveMonth(){
   const r = await db.from("unit_fees").insert(rows.map(x => ({building_id:B, fee_id:f.data.id, unit_id:x.unit.id, amount:0, base_amount:x.base, water_amount:x.water})));
   if (r.error){ await db.from("fees").delete().eq("id", f.data.id); return say(m, "No se pudo crear: " + r.error.message, "err"); }
   say(m, "Cobros creados: " + rows.length + " departamentos.", "ok"); setTimeout(() => tab("ing"), 900);
+}
+
+// ---------- RUTINAS DE OPERACIÓN (plan de mantenimiento) ----------
+const ROL = {recepcion:"Recepción", junta:"Junta", proveedor:"Proveedor"};
+let rutVer = "pendientes";
+const frec = d => ({1:"día", 7:"semana", 15:"15 días", 30:"mes", 120:"4 meses", 182:"6 meses", 365:"año"})[d] || d + " días";
+async function vR1(){
+  const {data, error} = await db.from("v_tasks_due").select("*").eq("building_id", B);
+  if (error) throw error;
+  const on = data.filter(x => x.active), pend = on.filter(x => x.status === "pendiente");
+  const show = rutVer === "pendientes" ? pend : rutVer === "todas" ? on : data.filter(x => !x.active);
+  show.sort((a, b) => b.days_overdue - a.days_overdue || a.system.localeCompare(b.system));
+  const cnt = r => pend.filter(x => x.role === r).length;
+  $("view").innerHTML = `<div class="card"><div class="mut">Rutinas pendientes</div><div class="big">${pend.length} de ${on.length}</div>
+    <div class="mut">Recepción ${cnt("recepcion")} · Junta ${cnt("junta")} · Proveedor ${cnt("proveedor")}</div>
+    ${["pendientes", "todas", "borradores"].map(k => `<button class="${rutVer === k ? "" : "sec "}sm" data-a="${act(() => { rutVer = k; render(); })}">${k[0].toUpperCase() + k.slice(1)}</button>`).join("")}</div>` +
+    (show.length ? list(show.map(x => ({t:`${x.system} · ${x.title}`, s:`${ROL[x.role]} · cada ${frec(x.freq_days)} · ${x.last_done ? "última " + dlabel(x.last_done) + " por " + (names[x.last_by] || "—") : "sin registro"}`,
+      r:!x.active ? "—" : x.status === "pendiente" ? (x.last_done ? (x.days_overdue > 0 ? x.days_overdue + " d" : "Hoy") : "Sin dato") : "OK", fn:() => go(x.title, () => vR2(x.task_id))}))) : '<p class="mut">No hay rutinas en esta vista.</p>');
+}
+async function vR2(id){
+  const [a, l] = await Promise.all([
+    db.from("v_tasks_due").select("*").eq("task_id", id).single(),
+    db.from("task_logs").select("*").eq("task_id", id).order("performed_at", {ascending:false}).limit(30)]);
+  if (a.error) throw a.error;
+  const x = a.data;
+  $("view").innerHTML = `<div class="card"><b>${esc(x.title)}</b><div class="mut">${esc(x.system)} · ${ROL[x.role]} · cada ${frec(x.freq_days)}${x.equipment_id && eqs[x.equipment_id] ? " · " + esc(eqs[x.equipment_id].name) : ""}</div>
+    ${x.instructions ? `<div style="margin-top:6px">${esc(x.instructions)}</div>` : ""}
+    <div class="mut" style="margin-top:6px">${x.active ? "Próximo vencimiento: " + dday(x.next_due) : "Rutina inactiva (borrador)"}</div>
+    <button class="sm" data-a="${act(() => formDone(x))}">Marcar hecha</button>
+    <button class="sec sm" data-a="${act(() => toggleTask(x))}">${x.active ? "Desactivar" : "Activar"}</button></div><h2>Historial</h2>` +
+    (l.data.length ? l.data.map(g => `<div class="card"><div class="row"><b>${dlabel(g.performed_at)}</b><span class="tag">${g.result === "ok" ? "OK" : "PROBLEMA"}</span></div><div class="mut">${esc(names[g.performed_by] || "—")}${g.notes ? " · " + esc(g.notes) : ""}</div></div>`).join("") : '<p class="mut">Todavía no hay registros.</p>');
+}
+function formDone(x){
+  $("view").innerHTML = `<div class="card"><h2 style="margin-top:0">Marcar hecha</h2><div class="mut">${esc(x.title)}</div>
+    <label>Fecha en que se hizo</label><input id="r_fe" type="date" value="${hoy()}">
+    <label>Resultado</label><select id="r_re"><option value="ok">Todo bien</option><option value="problema">Hubo un problema</option></select>
+    <label>Nota (proveedor, observaciones…)</label><input id="r_no">
+    <button data-a="${act(async () => {
+      const m = $("r_m"), {error} = await db.from("task_logs").insert({task_id:x.task_id, building_id:B, result:$("r_re").value, notes:$("r_no").value.trim() || null, performed_at:$("r_fe").value + "T12:00:00-05:00"});
+      if (error) return say(m, "No se pudo guardar: " + error.message, "err");
+      say(m, "Registrado.", "ok"); setTimeout(render, 700); })}">Guardar</button> <button class="sec" data-a="${act(render)}">Cancelar</button>
+    <div id="r_m" class="msg"></div></div>`;
+}
+async function toggleTask(x){
+  const {error} = await db.from("maintenance_tasks").update({active: !x.active}).eq("id", x.task_id);
+  if (error) return alert("No se pudo cambiar: " + error.message);
+  render();
 }
 
 // ---------- EQUIPOS e historial ----------

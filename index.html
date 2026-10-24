@@ -24,7 +24,7 @@ button:disabled{opacity:.6}
 .msg{margin-top:12px;font-weight:600}.ok{color:var(--ok)}.err{color:var(--err)}
 .row{display:flex;justify-content:space-between;gap:8px;align-items:flex-start}
 .tag{font-size:12px;font-weight:700;padding:2px 8px;border-radius:99px;border:1px solid var(--bd);white-space:nowrap}
-.hide{display:none}img.prev{max-width:100%;border-radius:8px;margin-top:8px}
+.hide{display:none}.two{display:flex;gap:8px}.two button{margin-top:12px}button.warn{background:transparent;color:var(--err);border:1px solid var(--err)}img.prev{max-width:100%;border-radius:8px;margin-top:8px}
 </style>
 </head>
 <body>
@@ -49,7 +49,11 @@ button:disabled{opacity:.6}
     <button id="btnOut" class="sec" style="width:auto;margin:0;padding:8px 12px">Salir</button>
   </div>
 
-  <div class="card" style="margin-top:12px">
+  <h2 id="rutH" class="hide">Rutinas de hoy</h2>
+  <div id="rut"></div>
+
+  <h2>Reportar un problema</h2>
+  <div class="card">
     <div id="bsel" class="hide"><label for="bsel2">Edificio</label><select id="bsel2"></select></div>
     <label for="eq">Equipo</label>
     <select id="eq"></select>
@@ -124,6 +128,7 @@ async function loadBuilding(id){
   $("eq").innerHTML = '<option value="">Otro / no está en la lista</option>' +
     (eqs || []).map(e => `<option value="${e.id}">${esc(e.name)}${e.location ? " — " + esc(e.location) : ""}</option>`).join("");
   await loadList();
+  await loadRoutines();
 }
 
 async function loadList(){
@@ -192,6 +197,60 @@ $("btnSend").onclick = async () => {
   }
   btn.disabled = false;
 };
+
+// ---------- Rutinas de hoy: un toque si todo está bien ----------
+let tasks = [], sysEq = {};
+async function loadRoutines(){
+  try {
+    const [t, q] = await Promise.all([
+      db.from("v_tasks_due").select("*").eq("building_id", buildingId).eq("role", "recepcion").eq("active", true).eq("status", "pendiente").order("days_overdue", {ascending:false}),
+      db.from("equipment").select("id,name,system").eq("building_id", buildingId).order("name")]);
+    if (t.error) throw t.error;
+    tasks = t.data || []; sysEq = {};
+    (q.data || []).forEach(e => (sysEq[e.system] = sysEq[e.system] || []).push(e));
+    $("rutH").classList.remove("hide");
+    $("rutH").textContent = tasks.length ? `Rutinas de hoy (${tasks.length})` : "Rutinas de hoy";
+    $("rut").innerHTML = tasks.length ? tasks.map(cardTask).join("") : '<div class="card"><b>✔ Todo al día.</b><div class="mut">No hay rutinas pendientes.</div></div>';
+  } catch (e) { $("rutH").classList.add("hide"); $("rut").innerHTML = ""; }
+}
+const cardTask = t => `<div class="card" id="t_${t.task_id}"><div class="row"><b>${esc(t.title)}</b>${t.days_overdue > 0 ? `<span class="tag">atrasada ${t.days_overdue} d</span>` : ""}</div>
+  <div class="mut">${esc(t.system)}</div>${t.instructions ? `<div class="mut" style="margin-top:4px">${esc(t.instructions)}</div>` : ""}
+  <div class="two"><button data-ok="${t.task_id}">✔ Todo bien</button><button class="warn" data-bad="${t.task_id}">⚠ Hay un problema</button></div></div>`;
+function badForm(id){
+  const t = tasks.find(x => x.task_id === id), list = sysEq[t.system] || [];
+  $("t_" + id).innerHTML = `<b>${esc(t.title)}</b><label>¿Qué equipo?</label>
+    <select id="b_eq_${id}">${list.map(e => `<option value="${e.id}" ${e.id === t.equipment_id ? "selected" : ""}>${esc(e.name)}</option>`).join("")}<option value="">Otro</option></select>
+    <label>¿Qué problema hay?</label><textarea id="b_ds_${id}"></textarea>
+    <label>Foto (opcional)</label><input id="b_ph_${id}" type="file" accept="image/*" capture="environment">
+    <div class="two"><button data-send="${id}">Enviar reporte</button><button class="warn" data-cancel="1">Cancelar</button></div><div id="b_m_${id}" class="msg"></div>`;
+}
+async function sendBad(id, b){
+  const t = tasks.find(x => x.task_id === id), d = $("b_ds_" + id).value.trim(), m = $("b_m_" + id);
+  if (d.length < 5) return say(m, "Describe el problema.", "err");
+  b.disabled = true; say(m, "Enviando…");
+  try {
+    let paths = []; const f = $("b_ph_" + id).files[0];
+    if (f){ const blob = await shrink(f), path = `${buildingId}/tickets/${crypto.randomUUID()}.jpg`;
+      const up = await db.storage.from("evidencias").upload(path, blob, {contentType:"image/jpeg"}); if (up.error) throw up.error; paths = [path]; }
+    const tk = await db.from("tickets").insert({building_id:buildingId, equipment_id:$("b_eq_" + id).value || null, description:`[${t.title}] ${d}`, priority:"normal", photo_paths:paths}).select("id").single();
+    if (tk.error) throw tk.error;
+    const lg = await db.from("task_logs").insert({task_id:id, building_id:buildingId, result:"problema", notes:d, ticket_id:tk.data.id});
+    if (lg.error) throw lg.error;
+    await loadList(); await loadRoutines();
+  } catch (e) { b.disabled = false; say(m, "No se pudo enviar. Revisa tu internet.", "err"); }
+}
+document.body.addEventListener("click", async e => {
+  const b = e.target.closest("button"); if (!b) return;
+  if (b.dataset.ok){
+    b.disabled = true;
+    const {error} = await db.from("task_logs").insert({task_id:b.dataset.ok, building_id:buildingId, result:"ok"});
+    if (error){ b.disabled = false; return alert("No se pudo guardar. Revisa tu internet."); }
+    return loadRoutines();
+  }
+  if (b.dataset.bad) return badForm(b.dataset.bad);
+  if (b.dataset.cancel) return loadRoutines();
+  if (b.dataset.send) return sendBad(b.dataset.send, b);
+});
 
 init();
 </script>
