@@ -22,7 +22,7 @@ textarea{min-height:90px}
 button{padding:12px 14px;margin-top:12px;font:inherit;font-weight:700;color:#fff;background:var(--pri);border:0;border-radius:10px;cursor:pointer}
 button.sec{background:transparent;color:var(--pri);border:1px solid var(--bd)}
 button.sm{padding:7px 10px;margin:8px 8px 0 0;font-size:14px}
-.tabs{display:flex;gap:8px;margin:12px 0}.tabs button{flex:1;margin:0;padding:10px 4px}
+.tabs{display:flex;gap:8px;margin:12px 0}.tabs button{flex:1;margin:0;padding:10px 2px;font-size:13px}
 .tabs button.on{background:var(--pri);color:#fff}
 .row{display:flex;justify-content:space-between;gap:10px;align-items:flex-start}
 .big{font-size:22px;font-weight:800}.tag{font-size:12px;font-weight:700;padding:2px 8px;border-radius:99px;border:1px solid var(--bd);white-space:nowrap}
@@ -47,7 +47,7 @@ button.sm{padding:7px 10px;margin:8px 8px 0 0;font-size:14px}
   <div class="row"><div><h1 id="bn">Edificio</h1><div id="who" class="mut"></div></div>
   <button class="sec sm" data-a="logout">Salir</button></div>
   <div class="tabs">
-    <button data-t="rep">Reportes</button><button data-t="ing">Ingresos</button><button data-t="gas">Gastos</button><button data-t="equ">Equipos</button>
+    <button data-t="rep">Reportes</button><button data-t="ing">Ingresos</button><button data-t="deu">Deudas</button><button data-t="gas">Gastos</button><button data-t="equ">Equipos</button>
   </div>
   <div id="crumbs"></div>
   <div id="view"></div>
@@ -86,6 +86,7 @@ function tab(k){
   document.querySelectorAll(".tabs button").forEach(b => b.classList.toggle("on", b.dataset.t === k));
   if (k === "rep") go("Reportes", vRep, true);
   if (k === "ing") go("Ingresos", vI1, true);
+  if (k === "deu") go("Deudas", vD1, true);
   if (k === "gas") go("Gastos", vG1, true);
   if (k === "equ") go("Equipos", vEq, true);
 }
@@ -309,6 +310,33 @@ async function waiveMora(b, pend){
   const {error} = await db.from("unit_fees").update({mora_waived: +u.data.mora_waived + n}).eq("id", b.unit_fee_id);
   if (error) return alert("No se pudo guardar: " + error.message);
   render();
+}
+
+// ---------- DEUDAS: quién debe cuánto (cuotas vencidas + por vencer + mora) ----------
+async function vD1(){
+  const {data, error} = await db.from("v_unit_debt").select("*").eq("building_id", B);
+  if (error) throw error;
+  const rows = data.filter(x => +x.total_debt > 0.005).sort((a, b) => b.total_debt - a.total_debt);
+  const sum = k => rows.reduce((a, x) => a + +x[k], 0);
+  $("view").innerHTML = `<div class="card"><div class="mut">Deuda total (cuotas + mora)</div><div class="big">${S(sum("total_debt"))}</div>
+    <div class="mut">Vencida ${S(sum("vencida"))} · Por vencer ${S(sum("por_vencer"))} · Mora ${S(sum("mora_pending"))}</div>
+    <div class="mut">${rows.length} departamentos con deuda</div></div>` +
+    list(rows.map(x => ({t:`${x.unit_number} · ${x.owner_name}`, s:`Vencida ${S(x.vencida)} (${x.unpaid_count} cuotas impagas) · por vencer ${S(x.por_vencer)} · mora ${S(x.mora_pending)}`, r:S(x.total_debt), fn:() => go(x.unit_number, () => vD2(x.unit_id))})));
+}
+async function vD2(uid){
+  const [a, b, c] = await Promise.all([
+    db.from("v_unit_debt").select("*").eq("unit_id", uid).single(),
+    db.from("v_unit_fee_balance").select("*").eq("unit_id", uid).gt("pending_amount", 0.005),
+    db.from("units").select("tenant_name").eq("id", uid).single()]);
+  if (a.error) throw a.error;
+  const d = a.data, rows = (b.data || []).sort((x, y) => String(x.period).localeCompare(String(y.period)));
+  $("view").innerHTML = `<div class="card"><b>${esc(d.unit_number)} · ${esc(d.owner_name)}</b>
+    ${c.data && c.data.tenant_name ? `<div class="mut">Inquilino: ${esc(c.data.tenant_name)}</div>` : ""}
+    <div>Cuotas vencidas: <b>${S(d.vencida)}</b> · Por vencer: <b>${S(d.por_vencer)}</b> · Mora: <b>${S(d.mora_pending)}</b></div>
+    <div class="big">${S(d.total_debt)}</div>
+    <button class="sec sm" data-a="${act(() => go("Historial de pagos", () => vI5(uid)))}">Historial de pagos</button></div>
+    <h2>Cuotas con saldo</h2>` +
+    (rows.length ? list(rows.map(x => ({t:x.fee_name, s:`${x.status} · pagado ${S(x.paid_amount)} de ${S(x.amount)}`, r:S(x.pending_amount), fn:() => go(x.fee_name, () => vI4(x.unit_fee_id))}))) : '<p class="mut">No tiene cuotas pendientes.</p>');
 }
 
 // ---------- Generar el cobro del mes (cuota fija + agua pegada desde Excel) ----------
