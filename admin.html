@@ -63,7 +63,7 @@ const dlabel = d => new Date(d).toLocaleString("es-PE", {dateStyle:"short", time
 const dday = d => d ? new Date(d + "T00:00:00").toLocaleDateString("es-PE") : "—";
 const nextM = m => { const d = new Date(m + "T00:00:00"); d.setMonth(d.getMonth() + 1); return d.toLocaleDateString("en-CA"); };
 const CAT = {personal:"Personal", maquinaria:"Maquinaria / Equipos", servicios:"Servicios", otros:"Otros"};
-let B = null, names = {}, eqs = {}, crumbs = [], acts = [];
+let B = null, DUE = 25, names = {}, eqs = {}, crumbs = [], acts = [];
 const act = fn => { acts.push(fn); return acts.length - 1; };
 const say = (el, t, c) => { el.textContent = t; el.className = "msg " + (c || ""); };
 
@@ -103,6 +103,7 @@ async function start(u){
   const {data} = await db.from("building_members").select("building_id, buildings(name)").eq("user_id", u.id).eq("role", "admin").limit(1);
   if (!data || !data.length){ await db.auth.signOut(); $("login").classList.remove("hide"); return say($("lm"), "Esta pantalla es solo para administradores.", "err"); }
   B = data[0].building_id; $("bn").textContent = data[0].buildings.name;
+  const cf = await db.from("buildings").select("due_day").eq("id", B).single(); DUE = (cf.data && cf.data.due_day) || 25;
   const [p, q] = await Promise.all([db.from("profiles").select("id,full_name"), db.from("equipment").select("*").eq("building_id", B).order("name")]);
   names = {}; (p.data || []).forEach(x => names[x.id] = x.full_name);
   eqs = {}; (q.data || []).forEach(x => eqs[x.id] = x);
@@ -244,54 +245,70 @@ async function vI3(fid){
   const {data, error} = await db.from("v_unit_fee_balance").select("*").eq("fee_id", fid);
   if (error) throw error;
   data.sort((a, b) => a.unit_number.localeCompare(b.unit_number, "es", {numeric:true}));
+  const mo = await db.from("v_unit_mora").select("unit_id,mora_pending").eq("building_id", B), mm = {};
+  (mo.data || []).forEach(r => mm[r.unit_id] = +r.mora_pending);
   const sum = k => data.reduce((a, x) => a + +x[k], 0), tot = sum("amount");
   $("view").innerHTML = `<div class="card"><div class="row"><div><div class="mut">A cobrar</div><div class="big">${S(tot)}</div></div>
     <div><div class="mut">Cobrado</div><div class="big">${S(sum("paid_amount"))}</div></div>
     <div><div class="mut">Pendiente</div><div class="big">${S(sum("pending_amount"))}</div></div></div>
-    <div class="mut">${tot ? Math.round(100 * sum("paid_amount") / tot) : 0}% cobrado · ${data.filter(x => x.status !== "pagado").length} departamentos con saldo</div></div>` +
-    list(data.map(x => ({t:`${x.unit_number} · ${x.owner_name}`, s:`${x.status} · cuota ${S(x.base_amount)} + agua ${S(x.water_amount)}`, r:S(x.amount), fn:() => go(x.unit_number, () => vI4(x.unit_fee_id))})));
+    <div class="mut">${tot ? Math.round(100 * sum("paid_amount") / tot) : 0}% cobrado · ${data.filter(x => x.status !== "pagado").length} departamentos con saldo · Mora pendiente ${S(data.reduce((a, x) => a + (mm[x.unit_id] || 0), 0))}</div></div>` +
+    list(data.map(x => ({t:`${x.unit_number} · ${x.owner_name}`, s:`${x.status} · cuota ${S(x.base_amount)} + agua ${S(x.water_amount)}${mm[x.unit_id] > 0 ? " · mora del depto " + S(mm[x.unit_id]) : ""}`, r:S(x.amount), fn:() => go(x.unit_number, () => vI4(x.unit_fee_id))})));
 }
 async function vI4(id){
-  const [a, c] = await Promise.all([
+  const [a, c, mr] = await Promise.all([
     db.from("v_unit_fee_balance").select("*").eq("unit_fee_id", id).single(),
-    db.from("payments").select("*").eq("unit_fee_id", id).order("paid_at", {ascending:false})]);
+    db.from("payments").select("*").eq("unit_fee_id", id).order("paid_at", {ascending:false}),
+    db.from("v_unit_fee_mora").select("*").eq("unit_fee_id", id).maybeSingle()]);
   if (a.error) throw a.error;
-  const b = a.data, u = (await db.from("units").select("tenant_name").eq("id", b.unit_id).single()).data || {};
+  const b = a.data, u = (await db.from("units").select("tenant_name").eq("id", b.unit_id).single()).data || {},
+    um = (await db.from("v_unit_mora").select("*").eq("unit_id", b.unit_id).maybeSingle()).data;
   $("view").innerHTML = `<div class="card"><b>${esc(b.unit_number)} · ${esc(b.owner_name)}</b>
     ${u.tenant_name ? `<div class="mut">Inquilino: ${esc(u.tenant_name)}</div>` : ""}
     <div class="mut">${esc(b.fee_name)}</div>
     <div>Cuota fija: ${S(b.base_amount)} · Agua: ${S(b.water_amount)}</div>
     <div>Total: <b>${S(b.amount)}</b> · Pagado: <b>${S(b.paid_amount)}</b> · Pendiente: <b>${S(b.pending_amount)}</b></div>
-    <div class="mut">Estado: ${esc(b.status)}</div>
+    <div class="mut">Estado: ${esc(b.status)}${mr.data ? " · vence " + dday(mr.data.due_date) : ""}</div>
+    ${mr.data && mr.data.mora_days > 0 ? `<div style="margin-top:6px">Mora de esta cuota desde el último corte: <b>${mr.data.mora_days} días</b> · ${S(mr.data.mora_accrued)}</div>` : ""}
+    ${um && +um.mora_pending > 0 ? `<div>Mora total del departamento: <b>${S(um.mora_pending)}</b> <span class="mut">(saldo anterior ${S(um.opening)} · nueva ${S(um.accrued)} · pagada ${S(um.paid)} · perdonada ${S(um.waived)})</span></div>` : ""}
     ${+b.pending_amount > 0 ? `<button class="sm" data-a="${act(() => formPay(b))}">Registrar pago</button>` : ""}
+    ${um && +um.mora_pending > 0 ? `<button class="sm" data-a="${act(() => formPay(b, "mora", um.mora_pending))}">Pagar mora</button><button class="sec sm" data-a="${act(() => waiveMora(b, um.mora_pending))}">Perdonar mora</button>` : ""}
     <button class="sec sm" data-a="${act(() => go("Historial de pagos", () => vI5(b.unit_id)))}">Historial de pagos del departamento</button></div>
     <h2>Pagos de este cobro</h2>` +
     (c.data.length ? c.data.map(x => payCard(x)).join("") : '<p class="mut">Todavía no hay pagos registrados.</p>');
 }
-const payCard = (x, fee) => `<div class="card"><div class="row"><b>${S(x.amount)}</b><span class="tag">${esc(x.method)}</span></div>
+const payCard = (x, fee) => `<div class="card"><div class="row"><b>${S(x.amount)}</b><span class="tag">${x.kind === "mora" ? "MORA · " : ""}${esc(x.method)}</span></div>
   <div class="mut">${fee ? esc(fee) + " · " : ""}${dday(x.paid_at)} · registró ${esc(names[x.registered_by] || "—")} (${dlabel(x.registered_at)})${x.notes ? " · " + esc(x.notes) : ""}</div></div>`;
 async function vI5(unitId){
   const {data, error} = await db.from("payments").select("*, unit_fees!inner(unit_id, fees(name))").eq("unit_fees.unit_id", unitId).order("paid_at", {ascending:false});
   if (error) throw error;
   $("view").innerHTML = data.length ? data.map(x => payCard(x, x.unit_fees.fees.name)).join("") : '<p class="mut">Este departamento aún no tiene pagos.</p>';
 }
-function formPay(b){
-  $("view").innerHTML = `<div class="card"><h2 style="margin-top:0">Registrar pago · ${esc(b.unit_number)}</h2>
-    <div class="mut">Pendiente: ${S(b.pending_amount)}</div>
-    <label>Monto (S/)</label><input id="p_am" type="number" step="0.01" min="0" inputmode="decimal" value="${b.pending_amount}">
+function formPay(b, kind = "cuota", pend = b.pending_amount){
+  $("view").innerHTML = `<div class="card"><h2 style="margin-top:0">Registrar pago de ${kind === "mora" ? "mora" : "cuota"} · ${esc(b.unit_number)}</h2>
+    <div class="mut">Pendiente: ${S(pend)}</div>
+    <label>Monto (S/)</label><input id="p_am" type="number" step="0.01" min="0" inputmode="decimal" value="${pend}">
     <label>Método</label><select id="p_me">${METODOS.map(m => `<option>${m}</option>`).join("")}</select>
     <label>Fecha de pago</label><input id="p_fe" type="date" value="${hoy()}">
     <label>Nota (opcional)</label><input id="p_no">
-    <button data-a="${act(() => savePay(b))}">Guardar pago</button> <button class="sec" data-a="${act(render)}">Cancelar</button>
+    <button data-a="${act(() => savePay(b, kind, pend))}">Guardar pago</button> <button class="sec" data-a="${act(render)}">Cancelar</button>
     <div id="p_m" class="msg"></div></div>`;
 }
-async function savePay(b){
+async function savePay(b, kind, pend){
   const m = $("p_m"), amt = +$("p_am").value;
   if (!(amt > 0)) return say(m, "Escribe un monto válido.", "err");
-  if (amt > +b.pending_amount && !confirm("El monto supera el saldo pendiente. ¿Registrar igual?")) return;
-  const {error} = await db.from("payments").insert({unit_fee_id:b.unit_fee_id, amount:amt, method:$("p_me").value, paid_at:$("p_fe").value, notes:$("p_no").value.trim() || null});
+  if (amt > +pend && !confirm("El monto supera el saldo pendiente. ¿Registrar igual?")) return;
+  const {error} = await db.from("payments").insert({unit_fee_id:b.unit_fee_id, kind, amount:amt, method:$("p_me").value, paid_at:$("p_fe").value, notes:$("p_no").value.trim() || null});
   if (error) return say(m, "No se pudo guardar: " + error.message, "err");
   say(m, "Pago registrado.", "ok"); setTimeout(render, 700);
+}
+async function waiveMora(b, pend){
+  const v = prompt("¿Cuánta mora quieres perdonar? (S/, máximo " + pend + ")", pend);
+  if (v === null) return;
+  const n = +v; if (!(n > 0) || n > +pend) return alert("Monto no válido.");
+  const u = await db.from("unit_fees").select("mora_waived").eq("id", b.unit_fee_id).single();
+  const {error} = await db.from("unit_fees").update({mora_waived: +u.data.mora_waived + n}).eq("id", b.unit_fee_id);
+  if (error) return alert("No se pudo guardar: " + error.message);
+  render();
 }
 
 // ---------- Generar el cobro del mes (cuota fija + agua pegada desde Excel) ----------
@@ -301,7 +318,7 @@ function formMonth(){
     <label>Mes</label><input id="m_mo" type="month" value="${d.toLocaleDateString("en-CA").slice(0, 7)}">
     <label>Cuota fija por departamento (S/)</label><input id="m_ba" type="number" step="0.01" min="0" value="385">
     <div class="mut">Los departamentos con cuota especial (ej. B-502) usan la suya.</div>
-    <label>Vencimiento (opcional)</label><input id="m_du" type="date">
+    <label>Vencimiento (vacío = día ${DUE} del mes)</label><input id="m_du" type="date">
     <label>Agua por departamento (S/)</label>
     <textarea id="m_wa" style="min-height:180px" placeholder="Pega desde Excel dos columnas: departamento y monto&#10;101A&#9;88.28&#10;102A&#9;56.89"></textarea>
     <div class="mut">Acepta 101A o A-101. Si falta un departamento, su agua queda en 0.</div>
@@ -328,7 +345,7 @@ async function saveMonth(){
   say(m, "Creando…");
   const rows = un.data.map(u => ({unit: u, base: u.base_fee_override ?? base, water: water[u.number] || 0}));
   const name = "Cuota de mantenimiento " + mlabel(per).replace(" de ", " ");
-  const f = await db.from("fees").insert({building_id:B, kind:"ordinaria", name, total_amount:rows.reduce((a, r) => a + r.base, 0), distribution_method:"igual", period:per, due_date:$("m_du").value || null, status:"en_cobranza"}).select("id").single();
+  const f = await db.from("fees").insert({building_id:B, kind:"ordinaria", name, total_amount:rows.reduce((a, r) => a + r.base, 0), distribution_method:"igual", period:per, due_date:$("m_du").value || per.slice(0, 8) + String(DUE).padStart(2, "0"), status:"en_cobranza"}).select("id").single();
   if (f.error) return say(m, "No se pudo crear: " + f.error.message, "err");
   const r = await db.from("unit_fees").insert(rows.map(x => ({building_id:B, fee_id:f.data.id, unit_id:x.unit.id, amount:0, base_amount:x.base, water_amount:x.water})));
   if (r.error){ await db.from("fees").delete().eq("id", f.data.id); return say(m, "No se pudo crear: " + r.error.message, "err"); }
