@@ -22,7 +22,7 @@ textarea{min-height:90px}
 button{padding:12px 14px;margin-top:12px;font:inherit;font-weight:700;color:#fff;background:var(--pri);border:0;border-radius:10px;cursor:pointer}
 button.sec{background:transparent;color:var(--pri);border:1px solid var(--bd)}
 button.sm{padding:7px 10px;margin:8px 8px 0 0;font-size:14px}
-.tabs{display:flex;gap:8px;margin:12px 0}.tabs button{flex:1;margin:0}
+.tabs{display:flex;gap:8px;margin:12px 0}.tabs button{flex:1;margin:0;padding:10px 4px}
 .tabs button.on{background:var(--pri);color:#fff}
 .row{display:flex;justify-content:space-between;gap:10px;align-items:flex-start}
 .big{font-size:22px;font-weight:800}.tag{font-size:12px;font-weight:700;padding:2px 8px;border-radius:99px;border:1px solid var(--bd);white-space:nowrap}
@@ -47,7 +47,7 @@ button.sm{padding:7px 10px;margin:8px 8px 0 0;font-size:14px}
   <div class="row"><div><h1 id="bn">Edificio</h1><div id="who" class="mut"></div></div>
   <button class="sec sm" data-a="logout">Salir</button></div>
   <div class="tabs">
-    <button data-t="rep">Reportes</button><button data-t="gas">Gastos</button><button data-t="equ">Equipos</button>
+    <button data-t="rep">Reportes</button><button data-t="ing">Ingresos</button><button data-t="gas">Gastos</button><button data-t="equ">Equipos</button>
   </div>
   <div id="crumbs"></div>
   <div id="view"></div>
@@ -85,6 +85,7 @@ document.body.addEventListener("click", e => {
 function tab(k){
   document.querySelectorAll(".tabs button").forEach(b => b.classList.toggle("on", b.dataset.t === k));
   if (k === "rep") go("Reportes", vRep, true);
+  if (k === "ing") go("Ingresos", vI1, true);
   if (k === "gas") go("Gastos", vG1, true);
   if (k === "equ") go("Equipos", vEq, true);
 }
@@ -109,6 +110,7 @@ async function start(u){
   $("login").classList.add("hide"); $("app").classList.remove("hide");
   tab("rep");
 }
+db.auth.onAuthStateChange(ev => { if (ev === "SIGNED_OUT"){ $("app").classList.add("hide"); $("login").classList.remove("hide"); say($("lm"), "Tu sesión venció. Entra de nuevo.", "err"); } });
 (async () => { const {data:{session}} = await db.auth.getSession(); session ? start(session.user) : $("login").classList.remove("hide"); })();
 
 // ---------- REPORTES ----------
@@ -218,6 +220,119 @@ async function vG4(eid, m){
     <div class="mut">Proveedor: ${esc(i.provider_name || "—")} · Garantía: ${i.warranty_end ? "hasta " + dday(i.warranty_end) : "sin garantía"}${i.warranty_notes ? " (" + esc(i.warranty_notes) + ")" : ""}</div>
     <div class="mut">${i.tickets ? "Reportó: " + esc(names[i.tickets.reported_by] || "—") + " (" + dlabel(i.tickets.reported_at) + ") · " : ""}Registró: ${esc(names[i.registered_by] || "—")}</div></div>`).join("") +
     `<button class="sec" data-a="${act(() => go("Historial", () => vHist(eid)))}">Ver historial completo de esta máquina</button>`;
+}
+
+// ---------- INGRESOS: Tipo → Cuota/Mes → Departamento → Detalle del pago ----------
+const KIND = {ordinaria:"Cuotas ordinarias", extraordinaria:"Cuotas extraordinarias"};
+const METODOS = ["yape","plin","transferencia","efectivo","otro"];
+const hoy = () => new Date().toLocaleDateString("en-CA");
+async function vI1(){
+  const {data, error} = await db.from("v_income_by_fee").select("*").eq("building_id", B);
+  if (error) throw error;
+  const t = {ordinaria:{c:0,p:0}, extraordinaria:{c:0,p:0}};
+  data.forEach(r => { if (t[r.kind]){ t[r.kind].c += +r.collected; t[r.kind].p += +r.pending; } });
+  $("view").innerHTML = `<div class="card"><div class="mut">Total cobrado</div><div class="big">${S(t.ordinaria.c + t.extraordinaria.c)}</div>
+    <div class="mut">Por cobrar: ${S(t.ordinaria.p + t.extraordinaria.p)}</div>
+    <button class="sm" data-a="${act(formMonth)}">+ Generar cobro del mes</button></div>` +
+    list(Object.keys(KIND).map(k => ({t:KIND[k], s:"Por cobrar: " + S(t[k].p), r:S(t[k].c), fn:() => go(KIND[k], () => vI2(k, data))})));
+}
+async function vI2(k, data){
+  const rows = data.filter(r => r.kind === k).sort((a, b) => String(b.period || "").localeCompare(String(a.period || "")));
+  $("view").innerHTML = rows.length ? list(rows.map(r => ({t:r.fee_name, s:`Por cobrar ${S(r.pending)} · ${r.collection_pct || 0}% cobrado`, r:S(r.collected), fn:() => go(r.fee_name, () => vI3(r.fee_id))}))) : '<p class="mut">No hay cobros de este tipo.</p>';
+}
+async function vI3(fid){
+  const {data, error} = await db.from("v_unit_fee_balance").select("*").eq("fee_id", fid);
+  if (error) throw error;
+  data.sort((a, b) => a.unit_number.localeCompare(b.unit_number, "es", {numeric:true}));
+  const sum = k => data.reduce((a, x) => a + +x[k], 0), tot = sum("amount");
+  $("view").innerHTML = `<div class="card"><div class="row"><div><div class="mut">A cobrar</div><div class="big">${S(tot)}</div></div>
+    <div><div class="mut">Cobrado</div><div class="big">${S(sum("paid_amount"))}</div></div>
+    <div><div class="mut">Pendiente</div><div class="big">${S(sum("pending_amount"))}</div></div></div>
+    <div class="mut">${tot ? Math.round(100 * sum("paid_amount") / tot) : 0}% cobrado · ${data.filter(x => x.status !== "pagado").length} departamentos con saldo</div></div>` +
+    list(data.map(x => ({t:`${x.unit_number} · ${x.owner_name}`, s:`${x.status} · cuota ${S(x.base_amount)} + agua ${S(x.water_amount)}`, r:S(x.amount), fn:() => go(x.unit_number, () => vI4(x.unit_fee_id))})));
+}
+async function vI4(id){
+  const [a, c] = await Promise.all([
+    db.from("v_unit_fee_balance").select("*").eq("unit_fee_id", id).single(),
+    db.from("payments").select("*").eq("unit_fee_id", id).order("paid_at", {ascending:false})]);
+  if (a.error) throw a.error;
+  const b = a.data, u = (await db.from("units").select("tenant_name").eq("id", b.unit_id).single()).data || {};
+  $("view").innerHTML = `<div class="card"><b>${esc(b.unit_number)} · ${esc(b.owner_name)}</b>
+    ${u.tenant_name ? `<div class="mut">Inquilino: ${esc(u.tenant_name)}</div>` : ""}
+    <div class="mut">${esc(b.fee_name)}</div>
+    <div>Cuota fija: ${S(b.base_amount)} · Agua: ${S(b.water_amount)}</div>
+    <div>Total: <b>${S(b.amount)}</b> · Pagado: <b>${S(b.paid_amount)}</b> · Pendiente: <b>${S(b.pending_amount)}</b></div>
+    <div class="mut">Estado: ${esc(b.status)}</div>
+    ${+b.pending_amount > 0 ? `<button class="sm" data-a="${act(() => formPay(b))}">Registrar pago</button>` : ""}
+    <button class="sec sm" data-a="${act(() => go("Historial de pagos", () => vI5(b.unit_id)))}">Historial de pagos del departamento</button></div>
+    <h2>Pagos de este cobro</h2>` +
+    (c.data.length ? c.data.map(x => payCard(x)).join("") : '<p class="mut">Todavía no hay pagos registrados.</p>');
+}
+const payCard = (x, fee) => `<div class="card"><div class="row"><b>${S(x.amount)}</b><span class="tag">${esc(x.method)}</span></div>
+  <div class="mut">${fee ? esc(fee) + " · " : ""}${dday(x.paid_at)} · registró ${esc(names[x.registered_by] || "—")} (${dlabel(x.registered_at)})${x.notes ? " · " + esc(x.notes) : ""}</div></div>`;
+async function vI5(unitId){
+  const {data, error} = await db.from("payments").select("*, unit_fees!inner(unit_id, fees(name))").eq("unit_fees.unit_id", unitId).order("paid_at", {ascending:false});
+  if (error) throw error;
+  $("view").innerHTML = data.length ? data.map(x => payCard(x, x.unit_fees.fees.name)).join("") : '<p class="mut">Este departamento aún no tiene pagos.</p>';
+}
+function formPay(b){
+  $("view").innerHTML = `<div class="card"><h2 style="margin-top:0">Registrar pago · ${esc(b.unit_number)}</h2>
+    <div class="mut">Pendiente: ${S(b.pending_amount)}</div>
+    <label>Monto (S/)</label><input id="p_am" type="number" step="0.01" min="0" inputmode="decimal" value="${b.pending_amount}">
+    <label>Método</label><select id="p_me">${METODOS.map(m => `<option>${m}</option>`).join("")}</select>
+    <label>Fecha de pago</label><input id="p_fe" type="date" value="${hoy()}">
+    <label>Nota (opcional)</label><input id="p_no">
+    <button data-a="${act(() => savePay(b))}">Guardar pago</button> <button class="sec" data-a="${act(render)}">Cancelar</button>
+    <div id="p_m" class="msg"></div></div>`;
+}
+async function savePay(b){
+  const m = $("p_m"), amt = +$("p_am").value;
+  if (!(amt > 0)) return say(m, "Escribe un monto válido.", "err");
+  if (amt > +b.pending_amount && !confirm("El monto supera el saldo pendiente. ¿Registrar igual?")) return;
+  const {error} = await db.from("payments").insert({unit_fee_id:b.unit_fee_id, amount:amt, method:$("p_me").value, paid_at:$("p_fe").value, notes:$("p_no").value.trim() || null});
+  if (error) return say(m, "No se pudo guardar: " + error.message, "err");
+  say(m, "Pago registrado.", "ok"); setTimeout(render, 700);
+}
+
+// ---------- Generar el cobro del mes (cuota fija + agua pegada desde Excel) ----------
+function formMonth(){
+  const d = new Date(); d.setMonth(d.getMonth() + 1);
+  $("view").innerHTML = `<div class="card"><h2 style="margin-top:0">Generar cobro del mes</h2>
+    <label>Mes</label><input id="m_mo" type="month" value="${d.toLocaleDateString("en-CA").slice(0, 7)}">
+    <label>Cuota fija por departamento (S/)</label><input id="m_ba" type="number" step="0.01" min="0" value="385">
+    <div class="mut">Los departamentos con cuota especial (ej. B-502) usan la suya.</div>
+    <label>Vencimiento (opcional)</label><input id="m_du" type="date">
+    <label>Agua por departamento (S/)</label>
+    <textarea id="m_wa" style="min-height:180px" placeholder="Pega desde Excel dos columnas: departamento y monto&#10;101A&#9;88.28&#10;102A&#9;56.89"></textarea>
+    <div class="mut">Acepta 101A o A-101. Si falta un departamento, su agua queda en 0.</div>
+    <button data-a="${act(saveMonth)}">Crear cobros</button> <button class="sec" data-a="${act(render)}">Cancelar</button>
+    <div id="m_m" class="msg"></div></div>`;
+}
+async function saveMonth(){
+  const m = $("m_m"), per = $("m_mo").value + "-01", base = +$("m_ba").value;
+  if (!$("m_mo").value || !(base > 0)) return say(m, "Revisa el mes y la cuota fija.", "err");
+  const [dup, un] = await Promise.all([
+    db.from("fees").select("id").eq("building_id", B).eq("kind", "ordinaria").eq("period", per),
+    db.from("units").select("id,number,base_fee_override").eq("building_id", B).eq("active", true)]);
+  if (dup.data && dup.data.length) return say(m, "Ese mes ya tiene cobros generados.", "err");
+  const nu = t => { t = t.toUpperCase(); let x = t.match(/^(\d+)([A-Z])$/); if (x) return x[2] + "-" + x[1]; x = t.match(/^([A-Z])-?(\d+)$/); return x ? x[1] + "-" + x[2] : null; };
+  const known = new Set(un.data.map(u => u.number)), water = {}, bad = [];
+  $("m_wa").value.split(/\r?\n/).forEach(l => {
+    const t = l.trim().split(/[\t;\s]+/).filter(Boolean); if (t.length < 2) return;
+    const k = nu(t[0]); let v = t[t.length - 1]; if (/^\d+,\d+$/.test(v)) v = v.replace(",", ".");
+    if (!k || !known.has(k) || isNaN(+v)) bad.push(l.trim()); else water[k] = +v;
+  });
+  if (bad.length) return say(m, "No reconozco estas líneas: " + bad.slice(0, 5).join(" | "), "err");
+  const falta = un.data.filter(u => !(u.number in water)).map(u => u.number);
+  if (falta.length && !confirm("Sin dato de agua (quedará en 0): " + falta.join(", ") + ". ¿Continuar?")) return;
+  say(m, "Creando…");
+  const rows = un.data.map(u => ({unit: u, base: u.base_fee_override ?? base, water: water[u.number] || 0}));
+  const name = "Cuota de mantenimiento " + mlabel(per).replace(" de ", " ");
+  const f = await db.from("fees").insert({building_id:B, kind:"ordinaria", name, total_amount:rows.reduce((a, r) => a + r.base, 0), distribution_method:"igual", period:per, due_date:$("m_du").value || null, status:"en_cobranza"}).select("id").single();
+  if (f.error) return say(m, "No se pudo crear: " + f.error.message, "err");
+  const r = await db.from("unit_fees").insert(rows.map(x => ({building_id:B, fee_id:f.data.id, unit_id:x.unit.id, amount:0, base_amount:x.base, water_amount:x.water})));
+  if (r.error){ await db.from("fees").delete().eq("id", f.data.id); return say(m, "No se pudo crear: " + r.error.message, "err"); }
+  say(m, "Cobros creados: " + rows.length + " departamentos.", "ok"); setTimeout(() => tab("ing"), 900);
 }
 
 // ---------- EQUIPOS e historial ----------
