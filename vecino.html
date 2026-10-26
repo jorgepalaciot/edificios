@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#1f6feb">
+<title>Mi edificio</title>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
+<style>
+:root{--bg:#f5f6f8;--card:#fff;--tx:#1a1d21;--mut:#6b7280;--pri:#1f6feb;--bd:#d9dde3;--ok:#1a7f37;--warn:#b45309;--err:#c0262d}
+@media (prefers-color-scheme:dark){:root{--bg:#14161a;--card:#1e2126;--tx:#eceef1;--mut:#9aa1ab;--bd:#343a42;--ok:#3fb950;--warn:#e3a008;--err:#f0616d}}
+*{box-sizing:border-box}
+body{margin:0;font:16px system-ui,sans-serif;background:var(--bg);color:var(--tx);padding:env(safe-area-inset-top) 0 env(safe-area-inset-bottom)}
+main{max-width:600px;margin:0 auto;padding:16px}
+h1{font-size:20px;margin:4px 0}h2{font-size:17px;margin:22px 0 8px}
+.mut{color:var(--mut);font-size:14px}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:12px;padding:14px;margin-bottom:10px}
+label{display:block;font-weight:600;margin:12px 0 4px}
+input,select{width:100%;padding:12px;font:inherit;color:var(--tx);background:var(--bg);border:1px solid var(--bd);border-radius:8px}
+button{width:100%;padding:13px;margin-top:14px;font:inherit;font-weight:700;color:#fff;background:var(--pri);border:0;border-radius:10px;cursor:pointer}
+button.sec{background:transparent;color:var(--pri);border:1px solid var(--bd);width:auto;padding:8px 12px;margin:0}
+.tabs{display:flex;gap:8px;margin:12px 0}.tabs button{flex:1;margin:0;background:transparent;color:var(--pri);border:1px solid var(--bd)}
+.tabs button.on{background:var(--pri);color:#fff;border-color:var(--pri)}
+.row{display:flex;justify-content:space-between;gap:10px;align-items:flex-start}
+.big{font-size:28px;font-weight:800}.mid{font-size:18px;font-weight:700}
+.tag{font-size:12px;font-weight:700;padding:2px 8px;border-radius:99px;border:1px solid var(--bd);white-space:nowrap}
+.tag.ok{color:var(--ok);border-color:var(--ok)}.tag.bad{color:var(--err);border-color:var(--err)}.tag.mid{color:var(--warn);border-color:var(--warn)}
+.msg{margin-top:10px;font-weight:600}.err{color:var(--err)}.ok{color:var(--ok)}
+.bar{height:8px;border-radius:99px;background:var(--bd);overflow:hidden;margin-top:6px}.bar i{display:block;height:100%;background:var(--ok)}
+.pre{white-space:pre-wrap}.hide{display:none}
+</style>
+</head>
+<body>
+<main>
+<section id="login" class="hide">
+  <h1>Mi edificio</h1>
+  <p class="mut">Ingresa con el usuario que te dio la administración.</p>
+  <div class="card">
+    <label for="em">Correo</label><input id="em" type="email" autocomplete="username" inputmode="email">
+    <label for="pw">Contraseña</label><input id="pw" type="password" autocomplete="current-password">
+    <button id="btnIn">Entrar</button>
+    <div id="lm" class="msg err"></div>
+  </div>
+</section>
+
+<section id="app" class="hide">
+  <div class="row"><div><h1 id="bn">Edificio</h1><div id="who" class="mut"></div></div><button class="sec" id="btnOut">Salir</button></div>
+  <div id="usel" class="hide card" style="margin-top:12px"><label for="us" style="margin-top:0">Departamento</label><select id="us"></select></div>
+  <div class="tabs"><button data-t="cta" class="on">Mi cuenta</button><button data-t="edi">Edificio</button></div>
+  <div id="view"></div>
+  <p class="mut" style="margin-top:24px">Aquí solo ves tu cuenta y datos generales del edificio. Si algo no coincide con tus registros, comunícate con la administración.</p>
+</section>
+</main>
+<script>
+const db = supabase.createClient("https://jfrythksdeiwrofsyvps.supabase.co", "sb_publishable_5Au68bE2Wp3fnxz1QIv2vw_18tklepb");
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const S = n => "S/ " + Number(n || 0).toLocaleString("es-PE", {minimumFractionDigits:2, maximumFractionDigits:2});
+const dd = d => d ? new Date(String(d).slice(0, 10) + "T00:00:00").toLocaleDateString("es-PE") : "—";
+const ml = d => new Date(String(d).slice(0, 10) + "T00:00:00").toLocaleDateString("es-PE", {month:"long", year:"numeric"});
+const CAT = {personal:"Personal", maquinaria:"Mantenimiento de equipos", servicios:"Servicios", otros:"Otros"};
+const TIPO = {preventivo:"Preventivo", correctivo:"Correctivo", emergencia:"Emergencia"};
+const ESTADO = {pagado:["Pagado","ok"], parcial:["Pago parcial","mid"], pendiente:["Pendiente","mid"], vencido:["Vencido","bad"]};
+let units = [], U = null, tab = "cta";
+
+(async () => { const {data:{session}} = await db.auth.getSession(); session ? start(session.user) : $("login").classList.remove("hide"); })();
+db.auth.onAuthStateChange(ev => { if (ev === "SIGNED_OUT"){ $("app").classList.add("hide"); $("login").classList.remove("hide"); } });
+$("btnIn").onclick = async () => {
+  $("lm").textContent = "";
+  const {data, error} = await db.auth.signInWithPassword({email:$("em").value.trim(), password:$("pw").value});
+  if (error) return $("lm").textContent = "Correo o contraseña incorrectos, o sin internet.";
+  start(data.user);
+};
+$("btnOut").onclick = async () => { await db.auth.signOut(); };
+document.querySelectorAll(".tabs button").forEach(b => b.onclick = () => { tab = b.dataset.t; render(); });
+$("us").onchange = () => { U = units.find(u => u.unit_id === $("us").value); render(); };
+
+async function start(user){
+  const {data, error} = await db.from("unit_owners").select("unit_id, building_id, units(number, owner_name), buildings(name)").eq("user_id", user.id);
+  if (error || !data || !data.length){
+    await db.auth.signOut(); $("login").classList.remove("hide");
+    return $("lm").textContent = "Tu usuario aún no está asociado a un departamento. Pídele a la administración que lo active.";
+  }
+  units = data.sort((a, b) => a.units.number.localeCompare(b.units.number, "es", {numeric:true})); U = units[0];
+  $("us").innerHTML = units.map(u => `<option value="${u.unit_id}">${esc(u.units.number)} · ${esc(u.units.owner_name)}</option>`).join("");
+  $("usel").classList.toggle("hide", units.length < 2);
+  $("login").classList.add("hide"); $("app").classList.remove("hide");
+  render();
+}
+async function render(){
+  document.querySelectorAll(".tabs button").forEach(b => b.classList.toggle("on", b.dataset.t === tab));
+  $("bn").textContent = U.buildings.name; $("who").textContent = "Departamento " + U.units.number + " · " + U.units.owner_name;
+  $("view").innerHTML = '<p class="mut">Cargando…</p>';
+  try { tab === "cta" ? await vCuenta() : await vEdificio(); }
+  catch (e) { $("view").innerHTML = '<p class="err">No se pudo cargar. Revisa tu internet e inténtalo de nuevo.</p>'; }
+}
+
+// ---------- MI CUENTA ----------
+async function vCuenta(){
+  const [d, bal, mor, pay, bi] = await Promise.all([
+    db.from("v_unit_debt").select("*").eq("unit_id", U.unit_id).maybeSingle(),
+    db.from("v_unit_fee_balance").select("*").eq("unit_id", U.unit_id),
+    db.from("v_unit_fee_mora").select("unit_fee_id,due_date").eq("unit_id", U.unit_id),
+    db.from("payments").select("amount,kind,method,paid_at,notes,unit_fees!inner(unit_id, fees(name))").eq("unit_fees.unit_id", U.unit_id).order("paid_at", {ascending:false}).limit(40),
+    db.from("buildings").select("payment_info,mora_asof_date").eq("id", U.building_id).single()]);
+  if (bal.error) throw bal.error;
+  const due = {}; (mor.data || []).forEach(m => due[m.unit_fee_id] = m.due_date);
+  const debt = d.data || {vencida:0, por_vencer:0, mora_pending:0, total_debt:0};
+  const total = +debt.total_debt, hoy = new Date().toLocaleDateString("en-CA");
+  const rows = (bal.data || []).sort((a, b) => String(b.period).localeCompare(String(a.period)));
+  const next = rows.filter(r => +r.pending_amount > 0.005 && due[r.unit_fee_id] && due[r.unit_fee_id] >= hoy).sort((a, b) => due[a.unit_fee_id].localeCompare(due[b.unit_fee_id]))[0];
+  const head = total > 0.005
+    ? `<div class="mut">Total a pagar</div><div class="big">${S(total)}</div>`
+    : total < -0.005 ? `<div class="mut">Saldo a favor</div><div class="big" style="color:var(--ok)">${S(-total)}</div>`
+    : `<div class="mid" style="color:var(--ok)">✔ Estás al día</div>`;
+  const b = bi.data || {};
+  $("view").innerHTML = `<div class="card">${head}
+      ${total > 0.005 ? `<div class="mut" style="margin-top:6px">Vencido ${S(debt.vencida)} · Por vencer ${S(debt.por_vencer)} · Mora ${S(debt.mora_pending)}</div>` : ""}
+      ${next ? `<div style="margin-top:8px">Próximo vencimiento: <b>${dd(due[next.unit_fee_id])}</b> · ${S(next.pending_amount)}</div>` : ""}
+      ${b.mora_asof_date ? `<div class="mut" style="margin-top:6px">La mora está calculada hasta el corte del ${dd(b.mora_asof_date)}.</div>` : ""}</div>` +
+    (b.payment_info ? `<div class="card"><b>¿Cómo pagar?</b><div class="pre" style="margin-top:6px">${esc(b.payment_info)}</div></div>` : "") +
+    `<h2>Mi estado de cuenta</h2>` +
+    (rows.length ? rows.map(r => { const [t, c] = ESTADO[r.status] || [r.status, ""];
+      return `<div class="card"><div class="row"><b>${esc(ml(r.period))}</b><span class="tag ${c}">${t}</span></div>
+        <div>Total ${S(r.amount)} · Pagado ${S(r.paid_amount)}${+r.pending_amount > 0.005 ? ` · <b>Saldo ${S(r.pending_amount)}</b>` : ""}</div>
+        <div class="mut">${+r.water_amount > 0 ? `Cuota fija ${S(r.base_amount)} + Agua ${S(r.water_amount)}` : `Cuota ${S(r.base_amount)} (agua incluida)`}${due[r.unit_fee_id] ? ` · Vence ${dd(due[r.unit_fee_id])}` : ""}</div></div>`; }).join("") : '<p class="mut">Aún no hay cobros registrados.</p>') +
+    `<h2>Mis pagos registrados</h2>` +
+    ((pay.data || []).length ? pay.data.map(p => `<div class="card"><div class="row"><b>${S(p.amount)}</b><span class="tag">${p.kind === "mora" ? "Mora" : "Cuota"}</span></div>
+      <div class="mut">${esc(p.unit_fees.fees.name)} · ${dd(p.paid_at)}${p.notes && p.notes.includes("fecha estimada") ? " (fecha aproximada)" : ""}${p.kind !== "mora" || p.method !== "otro" ? " · " + esc(p.method) : ""}</div></div>`).join("") : '<p class="mut">Aún no hay pagos registrados.</p>');
+}
+
+// ---------- EDIFICIO (datos generales, sin nombres) ----------
+async function vEdificio(){
+  const {data, error} = await db.rpc("building_transparency", {p_building: U.building_id});
+  if (error) throw error;
+  const t = data, bar = p => `<div class="bar"><i style="width:${Math.min(100, Math.max(0, +p || 0))}%"></i></div>`;
+  const gm = {}; t.gastos.forEach(g => { (gm[g.month] = gm[g.month] || {})[g.category] = +g.total; });
+  const meses = Object.keys(gm).sort().reverse();
+  let h = `<p class="mut">Actualizado al ${dd(t.actualizado)}. Son datos generales: no muestran nombres ni deudas de otros vecinos.</p>`;
+  h += `<h2>Cobranza de las cuotas</h2>` + (t.cobranza.length ? t.cobranza.slice().reverse().map(c => `<div class="card"><div class="row"><b>${esc(ml(c.period))}</b><b>${c.pct ?? 0}%</b></div>${bar(c.pct)}
+      <div class="mut">Cobrado ${S(c.cobrado)} de ${S(c.a_cobrar)}</div></div>`).join("") : '<p class="mut">Sin datos.</p>');
+  if (t.morosidad && t.morosidad.total) h += `<div class="card"><b>Departamentos con cuotas vencidas</b><div class="mid">${t.morosidad.con_deuda} de ${t.morosidad.total} (${t.morosidad.pct}%)</div></div>`;
+  if (t.reserva.hay) h += `<div class="card"><b>Fondo de reserva</b><div class="mid">${S(t.reserva.saldo)}</div></div>`;
+  if (t.extraordinarias.length) h += `<h2>Cuotas extraordinarias</h2>` + t.extraordinarias.map(x => `<div class="card"><div class="row"><b>${esc(x.name)}</b><b>${x.pct ?? 0}%</b></div>${bar(x.pct)}
+      <div class="mut">${x.objective ? esc(x.objective) + " · " : ""}Cobrado ${S(x.cobrado)} de ${S(x.a_cobrar)}</div></div>`).join("");
+  h += `<h2>¿En qué se gasta?</h2>` + (meses.length ? meses.map(m => { const c = gm[m], tot = Object.values(c).reduce((a, v) => a + v, 0);
+      return `<div class="card"><div class="row"><b>${esc(ml(m))}</b><b>${S(tot)}</b></div>${Object.keys(c).map(k => `<div class="mut">${esc(CAT[k] || k)}: ${S(c[k])}</div>`).join("")}</div>`; }).join("") : '<p class="mut">Sin gastos registrados.</p>');
+  if (t.gastos_equipo.length) h += `<h2>Gasto por equipo (últimos 12 meses)</h2><div class="card">` + t.gastos_equipo.map(g => `<div class="row"><span>${esc(g.name)}</span><b>${S(g.total)}</b></div>`).join("") + `</div>`;
+  if (t.trabajos.length) h += `<h2>Últimos trabajos realizados</h2>` + t.trabajos.map(w => `<div class="card"><div class="row"><b>${esc(w.equipo)}</b><b>${S(w.cost)}</b></div><div>${esc(w.work_description)}</div>
+      <div class="mut">${dd(w.performed_at)} · ${esc(TIPO[w.type] || w.type)}${w.provider_name ? " · " + esc(w.provider_name) : ""}${w.warranty_end ? " · Garantía hasta " + dd(w.warranty_end) : ""}</div></div>`).join("");
+  h += `<h2>Estado de los equipos</h2><div class="card"><div class="mid">${t.equipos.operativos} de ${t.equipos.total} operativos</div>` +
+    (t.equipos.fuera.length ? t.equipos.fuera.map(e => `<div class="mut">⚠ ${esc(e.name)}: ${esc(String(e.status).replace(/_/g, " "))}</div>`).join("") : '<div class="mut">Todos los equipos están operativos.</div>') + `</div>`;
+  $("view").innerHTML = h;
+}
+</script>
+</body>
+</html>
